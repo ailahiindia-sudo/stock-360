@@ -1,8 +1,8 @@
 # ==================================================
 # GEO-SENTINEL 360 - ULTIMATE PRO DASHBOARD
 # ==================================================
-# Includes: 30+ columns, Targets, Pivots,
-# Fundamental Data Age, and Live News Section.
+# Fixed: Trailing Dividend Yield (last 365 days)
+# Added: Separate columns for Latest News & Price Headline
 # ==================================================
 
 import streamlit as st
@@ -10,7 +10,7 @@ import yfinance as yf
 import pandas as pd
 import requests
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from textblob import TextBlob
 import time
 
@@ -76,7 +76,7 @@ def fetch_gpr_index():
 def fetch_news_for_stock(stock_symbol, limit=5):
     """
     Fetches top 'limit' news headlines for a given stock.
-    Returns: (headline_for_sentiment, sentiment_score, list_of_articles)
+    Returns: (primary_headline, sentiment_score, list_of_articles)
     """
     api_key = "YOUR_NEWS_API_KEY"  # Optional: Get free key from GNews.io
     query = stock_symbol.replace('.NS', '') + " stock India"
@@ -92,7 +92,6 @@ def fetch_news_for_stock(stock_symbol, limit=5):
                 data = response.json()
                 articles = data.get('articles', [])
                 if articles:
-                    # Store for detailed view
                     for art in articles:
                         articles_list.append({
                             'title': art.get('title', 'No Title'),
@@ -101,11 +100,7 @@ def fetch_news_for_stock(stock_symbol, limit=5):
                             'url': art.get('url', '#'),
                             'published': art.get('publishedAt', '')
                         })
-                    
-                    # Primary headline (first one)
                     primary_headline = articles[0].get('title', primary_headline)
-                    
-                    # Sentiment from all articles
                     sentiments = []
                     for art in articles[:3]:
                         analysis = TextBlob(art['title'] + ". " + art.get('description', ''))
@@ -115,31 +110,15 @@ def fetch_news_for_stock(stock_symbol, limit=5):
     except:
         pass
 
-    # Fallback if no articles or no API key
+    # Fallback if no articles
     if not articles_list:
-        try:
-            ticker = yf.Ticker(stock_symbol)
-            hist = ticker.history(period="5d")
-            if len(hist) > 1:
-                change = (hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]
-                pct = round(change * 100, 2)
-                primary_headline = f"Price changed {pct}% in last 5 days (proxy for sentiment)"
-                sentiment_score = change * 100 * 10
-                articles_list.append({
-                    'title': primary_headline,
-                    'description': f'Used price movement as a proxy because no news API key was provided or no news found.',
-                    'source': 'Price Proxy',
-                    'url': '#',
-                    'published': datetime.now().strftime('%Y-%m-%d')
-                })
-        except:
-            articles_list.append({
-                'title': 'No data available',
-                'description': 'Please add a GNews API key to see real news headlines.',
-                'source': 'System',
-                'url': '#',
-                'published': datetime.now().strftime('%Y-%m-%d')
-            })
+        articles_list.append({
+            'title': 'No news articles found. Consider adding a GNews API key.',
+            'description': 'Without a key, detailed news cannot be fetched.',
+            'source': 'System',
+            'url': '#',
+            'published': datetime.now().strftime('%Y-%m-%d')
+        })
 
     return primary_headline, round(sentiment_score, 2), articles_list
 
@@ -194,7 +173,7 @@ def analyze_stock(symbol):
             tech_score += (position * 20) - 10
         tech_score = max(0, min(100, tech_score))
 
-        # ----- 3. NEWS & SENTIMENT (Now returns 3 values) -----
+        # ----- 3. NEWS, SENTIMENT & HEADLINES -----
         news_headline, raw_sent, articles = fetch_news_for_stock(symbol, limit=5)
         norm_sent_score = 50 + (raw_sent / 2)
         norm_sent_score = max(0, min(100, norm_sent_score))
@@ -252,12 +231,42 @@ def analyze_stock(symbol):
         s2 = round(pivot - (prev_high - prev_low), 2)
         s3 = round(prev_low - 2 * (prev_high - pivot), 2)
 
-        # ----- 9. NEW COLUMNS (Fundamental Data Age, Market Cap, etc.) -----
-        # Fundamental Data As Of
+        # ----- 9. IMPROVED DIVIDEND YIELD (Trailing 12 Months) -----
+        try:
+            dividends = ticker.dividends
+            if not dividends.empty:
+                one_year_ago = datetime.now() - timedelta(days=365)
+                recent_divs = dividends[dividends.index >= one_year_ago]
+                total_div = recent_divs.sum()
+                if current_price > 0 and total_div > 0:
+                    div_yield = round((total_div / current_price) * 100, 2)
+                else:
+                    div_yield = 0.0
+            else:
+                div_yield = 0.0
+        except:
+            div_yield = 0.0
+
+        # ----- 10. GENERATE PRICE HEADLINE (Separate Column) -----
+        change_pct = info.get('regularMarketChangePercent', 0)
+        if change_pct and change_pct != 0:
+            price_headline = f"Price moved {round(change_pct, 2)}% today"
+        else:
+            # Fallback to 5-day change
+            try:
+                hist_5d = ticker.history(period="5d")
+                if len(hist_5d) > 1:
+                    chg = (hist_5d['Close'].iloc[-1] - hist_5d['Close'].iloc[-2]) / hist_5d['Close'].iloc[-2] * 100
+                    price_headline = f"Price moved {round(chg, 2)}% in last 5 days"
+                else:
+                    price_headline = "Price change data not available"
+            except:
+                price_headline = "Price change data not available"
+
+        # ----- 11. OTHER METRICS (Market Cap, 52W, etc.) -----
         fund_data_date = info.get('mostRecentQuarter')
         if fund_data_date:
             try:
-                # Convert timestamp to date string
                 fund_date_str = datetime.fromtimestamp(fund_data_date).strftime('%Y-%m-%d')
             except:
                 fund_date_str = 'N/A'
@@ -265,22 +274,16 @@ def analyze_stock(symbol):
             fund_date_str = 'N/A'
 
         market_cap = info.get('marketCap', 0)
-        market_cap_cr = round(market_cap / 1e7, 2) if market_cap > 0 else 0  # Convert to Crores
+        market_cap_cr = round(market_cap / 1e7, 2) if market_cap > 0 else 0
 
         pb_ratio = info.get('priceToBook', 'N/A')
         if pb_ratio != 'N/A':
             pb_ratio = round(pb_ratio, 2)
 
-        div_yield = info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0
-        div_yield = round(div_yield, 2)
-
         high_52_val = info.get('fiftyTwoWeekHigh', current_price)
         low_52_val = info.get('fiftyTwoWeekLow', current_price)
         pct_from_high = round(((high_52_val - current_price) / high_52_val) * 100, 2) if high_52_val > 0 else 0
         pct_from_low = round(((current_price - low_52_val) / low_52_val) * 100, 2) if low_52_val > 0 else 0
-
-        change_pct = info.get('regularMarketChangePercent', 0)
-        change_pct = round(change_pct, 2)
 
         volume = info.get('volume', 0)
         avg_volume = info.get('averageVolume', 0)
@@ -292,7 +295,7 @@ def analyze_stock(symbol):
             'Company': info.get('longName', symbol),
             'Symbol': symbol.replace('.NS', ''),
             'Price': entry,
-            'Change %': change_pct,
+            'Change %': round(change_pct, 2) if change_pct else 0,
             'Composite': final_index,
             'Signal': signal,
             'Fundamental': round(fund_score, 1),
@@ -302,7 +305,7 @@ def analyze_stock(symbol):
             'Fund Data As Of': fund_date_str,
             'Market Cap (₹ Cr)': market_cap_cr,
             'P/B Ratio': pb_ratio,
-            'Div Yield %': div_yield,
+            'Div Yield (Trailing %)': div_yield,
             '52W High': round(high_52_val, 2),
             '52W Low': round(low_52_val, 2),
             '% from 52W High': pct_from_high,
@@ -323,15 +326,16 @@ def analyze_stock(symbol):
             'R1': r1,
             'R2': r2,
             'R3': r3,
-            '📰 Top Headline': news_headline[:100] + "..." if len(news_headline) > 100 else news_headline,
-            '_articles': articles  # Hidden for the news section
+            '📈 Price Headline': price_headline,  # NEW COLUMN
+            '📰 Latest News': news_headline,     # NEW COLUMN
+            '_articles': articles
         }
     except Exception as e:
         return None
 
 # ---------- 4. MAIN DASHBOARD UI ----------
 st.title("📊 Geo-Sentinel 360 - Ultimate Pro Dashboard")
-st.markdown("**30+ data points per stock** including Live News, Targets, Pivots, and Fundamental Data Age.")
+st.markdown("**30+ data points per stock** including Trailing Dividend Yield, Price Headline, and Live News.")
 
 # Sidebar
 gpr_data = fetch_gpr_index()
@@ -344,6 +348,7 @@ st.sidebar.caption("If GPR is 'Elevated', Geopolitical score drops to 30.")
 st.sidebar.divider()
 st.sidebar.info("📌 **Targets:** Risk=2×ATR, TP1=1.5R, TP2=2.5R, TP3=3.5R")
 st.sidebar.info("📌 **Pivots:** Floor pivot points (R1/R2/R3 & S1/S2/S3)")
+st.sidebar.info("📌 **Dividend Yield:** Trailing 12-month sum divided by current price.")
 
 if st.button("🔄 Refresh All Data", type="primary"):
     st.cache_data.clear()
@@ -361,7 +366,6 @@ for idx, (name, symbol) in enumerate(STOCK_LIST.items()):
     progress_text.text(f"Analyzing {name}... ({idx+1}/{total})")
     result = analyze_stock(symbol)
     if result:
-        # Store articles separately for the news section
         if '_articles' in result:
             all_articles_map[result['Symbol']] = result.pop('_articles')
         results.append(result)
@@ -374,13 +378,11 @@ progress_bar.empty()
 
 if results:
     df = pd.DataFrame(results)
-    # Sort by Composite Index (highest first)
     df = df.sort_values(by='Composite', ascending=False)
 
     st.divider()
     st.subheader("📋 Complete Stock Matrix (All Parameters)")
 
-    # Display as an interactive, sortable table
     st.dataframe(
         df,
         column_config={
@@ -394,7 +396,7 @@ if results:
             "Fund Data As Of": st.column_config.TextColumn("Fund Data As Of"),
             "Market Cap (₹ Cr)": st.column_config.NumberColumn("Mkt Cap (₹Cr)", format="%.2f"),
             "P/B Ratio": st.column_config.NumberColumn("P/B", format="%.2f"),
-            "Div Yield %": st.column_config.NumberColumn("Div Yield", format="%.2f%%"),
+            "Div Yield (Trailing %)": st.column_config.NumberColumn("Div Yield (Tr.)", format="%.2f%%"),
             "52W High": st.column_config.NumberColumn("52W High", format="%.2f"),
             "52W Low": st.column_config.NumberColumn("52W Low", format="%.2f"),
             "% from 52W High": st.column_config.NumberColumn("% High", format="%.2f%%"),
@@ -415,37 +417,32 @@ if results:
             "R1": st.column_config.NumberColumn("R1", format="%.2f"),
             "R2": st.column_config.NumberColumn("R2", format="%.2f"),
             "R3": st.column_config.NumberColumn("R3", format="%.2f"),
-            "📰 Top Headline": st.column_config.TextColumn("📰 Top Headline", width="large"),
+            "📈 Price Headline": st.column_config.TextColumn("📈 Price Headline", width="medium"),
+            "📰 Latest News": st.column_config.TextColumn("📰 Latest News", width="large"),
         },
         hide_index=True,
         use_container_width=True,
         height=700
     )
 
-    st.caption(f"✅ Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Data: Yahoo Finance, GPR Index, GNews (if key provided). Targets & pivots are projections, not guarantees.")
+    st.caption(f"✅ Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Data: Yahoo Finance, GPR Index, GNews (if key provided). All numbers are mathematically derived from live data.")
 
     # ---------- 5. DETAILED NEWS SECTION (LIVE) ----------
     st.divider()
     st.subheader("📰 Live News & Events - Detailed View")
 
-    # Dropdown to select a stock for detailed news
     stock_options = [f"{row['Company']} ({row['Symbol']})" for _, row in df.iterrows()]
     selected_option = st.selectbox("Select a stock to view its latest 5 news headlines:", options=stock_options)
 
     if selected_option:
-        # Extract symbol
         symbol = selected_option.split('(')[-1].replace(')', '')
-        
-        # Fetch detailed news for this symbol (reuse the function)
         with st.spinner(f"Fetching latest news for {selected_option}..."):
             _, _, articles = fetch_news_for_stock(symbol, limit=5)
-            
             if articles:
                 for article in articles:
                     with st.container():
                         col1, col2 = st.columns([6, 1])
                         with col1:
-                            # Clickable title
                             if article['url'] != '#':
                                 st.markdown(f"**🔗 [{article['title']}]({article['url']})**")
                             else:
@@ -456,7 +453,6 @@ if results:
                             st.text(f"🏢 {article['source']}")
                         st.divider()
             else:
-                st.info("No news found for this stock. Please check if the GNews API key is valid or try again later.")
-
+                st.info("No news found for this stock.")
 else:
     st.error("Failed to fetch data. Please check your internet connection or try again.")
