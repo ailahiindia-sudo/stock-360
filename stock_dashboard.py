@@ -82,7 +82,7 @@ def fetch_news_sentiment_av(symbol):
     Falls back to GNews + TextBlob if AV key is not provided.
     """
     # >>> PASTE YOUR ALPHA VANTAGE API KEY HERE <<<
-    ALPHA_VANTAGE_KEY = "7TI0PN4V5TGVDM3W" 
+    ALPHA_VANTAGE_KEY = "QJVKAII13P2C736L" 
     
     ticker = symbol.replace('.NS', '')
     news_list = []
@@ -90,7 +90,7 @@ def fetch_news_sentiment_av(symbol):
     avg_sentiment_score = 0.0
 
     try:
-        if ALPHA_VANTAGE_KEY != "YOUR_ALPHA_VANTAGE_KEY":
+        if ALPHA_VANTAGE_KEY != "QJVKAII13P2C736L":
             url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}&limit=5"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
@@ -140,9 +140,9 @@ def fetch_news_sentiment_av(symbol):
 
     # ----- FALLBACK: GNews + TextBlob (if AV key missing) -----
     try:
-        gnews_key = "YOUR_GNEWS_API_KEY"  # Optional fallback
+        gnews_key = "QJVKAII13P2C736L"  # Optional fallback
         query = ticker + " stock India"
-        if gnews_key != "YOUR_GNEWS_API_KEY":
+        if gnews_key != "QJVKAII13P2C736L":
             url = f"https://gnews.io/api/v4/search?q={query}&token={gnews_key}&lang=en&max=5"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
