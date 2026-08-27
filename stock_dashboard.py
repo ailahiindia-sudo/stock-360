@@ -1,11 +1,11 @@
 # ==================================================
-# GEO-SENTINEL 360 - THE ULTIMATE PRODUCT
+# GEO-SENTINEL 360 - THE ULTIMATE PRODUCT (FIXED)
 # ==================================================
-# Features:
-# - Executive Summary (Strong Buys / Buys / Holds / Sells)
-# - Smart Filtering (Show only Strong Buys)
-# - Color-Coded Signals (Green=Buy, Yellow=Hold, Red=Sell)
-# - Live News + Sentiment Score (via Alpha Vantage)
+# Fixes:
+# - API Key validation fixed (no more skipping)
+# - GNews is now primary (100 requests/day > 25)
+# - Dividend Yield fixed (uses multiple fallbacks)
+# - Fund Data As Of improved
 # ==================================================
 
 import streamlit as st
@@ -54,6 +54,19 @@ STOCK_LIST = {
     "Grasim": "GRASIM.NS"
 }
 
+# ---------- HELPER FUNCTION TO CHECK VALID API KEYS ----------
+def is_valid_key(key):
+    """Returns True if the key looks like a valid API key (not a placeholder)."""
+    if not key:
+        return False
+    if "YOUR_" in key:
+        return False
+    if "*****" in key:
+        return False
+    if len(key) < 10:
+        return False
+    return True
+
 # ---------- 1. GEOPOLITICAL RISK ----------
 @st.cache_data(ttl=3600)
 def fetch_gpr_index():
@@ -74,76 +87,33 @@ def fetch_gpr_index():
         return {'current': 0, 'percentile_95': 0, 'status': 'Unavailable'}
     return {'current': 0, 'percentile_95': 0, 'status': 'Error'}
 
-# ---------- 2. FETCH NEWS + SENTIMENT (Alpha Vantage) ----------
+# ---------- 2. FETCH NEWS + SENTIMENT (GNews Primary, Alpha Vantage Fallback) ----------
 @st.cache_data(ttl=1800)
 def fetch_news_sentiment_av(symbol):
     """
-    Fetches news and sentiment using Alpha Vantage's NEWS_SENTIMENT endpoint.
-    Falls back to GNews + TextBlob if AV key is not provided.
+    Fetches news and sentiment.
+    Priority: GNews (100 req/day) → Alpha Vantage (25 req/day) → Price Proxy.
     """
-    # >>> PASTE YOUR ALPHA VANTAGE API KEY HERE <<<
-    ALPHA_VANTAGE_KEY = "QJVKAII13P2C736L" 
+    # >>> PASTE YOUR NEWS API KEY HERE (JUST ONE IS ENOUGH) <<<
+    # Option 1: GNews (Recommended - 100 free requests/day)
+    # Sign up at: https://gnews.io/
+    GNWS_API_KEY = "7bb8a1485fd031d5af596d3ee8ca133e"  # <<< PASTE YOUR GNEWS KEY HERE
+    
+    # Option 2: Alpha Vantage (25 free requests/day - fallback only)
+    # Sign up at: https://www.alphavantage.co/support/#api-key
+    ALPHA_VANTAGE_KEY = "7TI0PN4V5TGVDM3W"  # <<< PASTE YOUR ALPHA VANTAGE KEY HERE
     
     ticker = symbol.replace('.NS', '')
     news_list = []
     primary_headline = "No recent news."
     avg_sentiment_score = 0.0
+    used_api = None
 
-    try:
-        if ALPHA_VANTAGE_KEY != "QJVKAII13P2C736L":
-            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}&limit=5"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                data = response.json()
-                articles = data.get('feed', [])
-                if articles:
-                    sentiment_scores = []
-                    for art in articles:
-                        title = art.get('title', 'No Title')
-                        summary = art.get('summary', '')
-                        source = art.get('source', 'Unknown')
-                        url_link = art.get('url', '#')
-                        time_pub = art.get('time_published', '')[:10]  # YYYYMMDD
-                        # Format date
-                        if time_pub:
-                            time_pub = f"{time_pub[:4]}-{time_pub[4:6]}-{time_pub[6:8]}"
-                        
-                        # Get sentiment score from API
-                        ticker_sentiment = art.get('ticker_sentiment', [])
-                        sentiment = 0
-                        for ts in ticker_sentiment:
-                            if ts.get('ticker') == ticker:
-                                sentiment = float(ts.get('ticker_sentiment_score', 0))
-                                break
-                        
-                        # If no specific ticker sentiment, use overall
-                        if sentiment == 0:
-                            sentiment = float(art.get('overall_sentiment_score', 0))
-                        
-                        sentiment_scores.append(sentiment)
-                        
-                        news_list.append({
-                            'title': title,
-                            'description': summary[:150] + "..." if len(summary) > 150 else summary,
-                            'source': source,
-                            'url': url_link,
-                            'published': time_pub,
-                            'sentiment': round(sentiment, 3)
-                        })
-                    
-                    if news_list:
-                        primary_headline = news_list[0]['title']
-                        avg_sentiment_score = np.mean(sentiment_scores) * 100  # Scale to match our system
-                    return primary_headline, round(avg_sentiment_score, 2), news_list
-    except:
-        pass
-
-    # ----- FALLBACK: GNews + TextBlob (if AV key missing) -----
-    try:
-        gnews_key = "QJVKAII13P2C736L"  # Optional fallback
-        query = ticker + " stock India"
-        if gnews_key != "QJVKAII13P2C736L":
-            url = f"https://gnews.io/api/v4/search?q={query}&token={gnews_key}&lang=en&max=5"
+    # ----- ATTEMPT 1: GNews (Primary - 100 requests/day) -----
+    if is_valid_key(GNWS_API_KEY):
+        try:
+            query = ticker + " stock India"
+            url = f"https://gnews.io/api/v4/search?q={query}&token={GNWS_API_KEY}&lang=en&max=5"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
                 data = response.json()
@@ -164,36 +134,82 @@ def fetch_news_sentiment_av(symbol):
                     if news_list:
                         primary_headline = news_list[0]['title']
                         avg_sentiment_score = np.mean(sentiments) * 100
-    except:
-        pass
-
-    # ----- FINAL FALLBACK: Price Proxy -----
-    if not news_list:
-        try:
-            ticker_obj = yf.Ticker(symbol)
-            hist = ticker_obj.history(period="5d")
-            if len(hist) > 1:
-                change = (hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]
-                pct = round(change * 100, 2)
-                primary_headline = f"Price moved {pct}% in last 5 days (proxy for sentiment)"
-                avg_sentiment_score = change * 100 * 10
-                news_list.append({
-                    'title': primary_headline,
-                    'description': 'Price-based proxy used because no news API key was provided.',
-                    'source': 'Price Proxy',
-                    'url': '#',
-                    'published': datetime.now().strftime('%Y-%m-%d'),
-                    'sentiment': round(avg_sentiment_score / 100, 3)
-                })
+                        used_api = "GNews"
+                        return primary_headline, round(avg_sentiment_score, 2), news_list
         except:
+            pass
+
+    # ----- ATTEMPT 2: Alpha Vantage (Fallback - 25 requests/day) -----
+    if is_valid_key(ALPHA_VANTAGE_KEY):
+        try:
+            url = f"https://www.alphavantage.co/query?function=NEWS_SENTIMENT&tickers={ticker}&apikey={ALPHA_VANTAGE_KEY}&limit=5"
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                articles = data.get('feed', [])
+                if articles:
+                    sentiment_scores = []
+                    for art in articles:
+                        title = art.get('title', 'No Title')
+                        summary = art.get('summary', '')
+                        source = art.get('source', 'Unknown')
+                        url_link = art.get('url', '#')
+                        time_pub = art.get('time_published', '')[:10]
+                        if time_pub:
+                            time_pub = f"{time_pub[:4]}-{time_pub[4:6]}-{time_pub[6:8]}"
+                        
+                        ticker_sentiment = art.get('ticker_sentiment', [])
+                        sentiment = 0
+                        for ts in ticker_sentiment:
+                            if ts.get('ticker') == ticker:
+                                sentiment = float(ts.get('ticker_sentiment_score', 0))
+                                break
+                        if sentiment == 0:
+                            sentiment = float(art.get('overall_sentiment_score', 0))
+                        
+                        sentiment_scores.append(sentiment)
+                        news_list.append({
+                            'title': title,
+                            'description': summary[:150] + "..." if len(summary) > 150 else summary,
+                            'source': source,
+                            'url': url_link,
+                            'published': time_pub,
+                            'sentiment': round(sentiment, 3)
+                        })
+                    if news_list:
+                        primary_headline = news_list[0]['title']
+                        avg_sentiment_score = np.mean(sentiment_scores) * 100
+                        used_api = "Alpha Vantage"
+                        return primary_headline, round(avg_sentiment_score, 2), news_list
+        except:
+            pass
+
+    # ----- ATTEMPT 3: Price Proxy (Zero-config fallback) -----
+    try:
+        ticker_obj = yf.Ticker(symbol)
+        hist = ticker_obj.history(period="5d")
+        if len(hist) > 1:
+            change = (hist['Close'].iloc[-1] - hist['Close'].iloc[-2]) / hist['Close'].iloc[-2]
+            pct = round(change * 100, 2)
+            primary_headline = f"Price moved {pct}% in last 5 days (proxy for sentiment)"
+            avg_sentiment_score = change * 100 * 10
             news_list.append({
-                'title': 'No news data available',
-                'description': 'Please add an Alpha Vantage or GNews API key to see live news.',
-                'source': 'System',
+                'title': primary_headline,
+                'description': 'Price-based proxy used. Add a GNews or Alpha Vantage key for real news.',
+                'source': 'Price Proxy',
                 'url': '#',
                 'published': datetime.now().strftime('%Y-%m-%d'),
-                'sentiment': 0
+                'sentiment': round(avg_sentiment_score / 100, 3)
             })
+    except:
+        news_list.append({
+            'title': 'No news data available',
+            'description': 'Please add a GNews or Alpha Vantage API key to see live news.',
+            'source': 'System',
+            'url': '#',
+            'published': datetime.now().strftime('%Y-%m-%d'),
+            'sentiment': 0
+        })
 
     return primary_headline, round(avg_sentiment_score, 2), news_list
 
@@ -260,7 +276,7 @@ def analyze_stock(symbol):
         final_index = (fund_score * 0.30) + (tech_score * 0.30) + (norm_sent_score * 0.20) + (geo_score * 0.20)
         final_index = round(final_index, 1)
 
-        # -- Signal (with Emojis for visual color) --
+        # -- Signal --
         if final_index >= 75: signal = "🟢 Strong Buy"
         elif final_index >= 60: signal = "🟢 Buy"
         elif final_index >= 45: signal = "🟡 Hold"
@@ -305,16 +321,28 @@ def analyze_stock(symbol):
         s2 = round(pivot - (prev_high - prev_low), 2)
         s3 = round(prev_low - 2 * (prev_high - pivot), 2)
 
-        # -- Dividend (Trailing) --
+        # -- FIXED: Dividend Yield (Multiple Fallbacks) --
+        div_yield = 0.0
         try:
             dividends = ticker.dividends
             if not dividends.empty:
                 one_year_ago = datetime.now() - timedelta(days=365)
                 recent_divs = dividends[dividends.index >= one_year_ago]
                 total_div = recent_divs.sum()
-                div_yield = round((total_div / current_price) * 100, 2) if current_price > 0 and total_div > 0 else 0.0
-            else:
-                div_yield = 0.0
+                if current_price > 0 and total_div > 0:
+                    div_yield = round((total_div / current_price) * 100, 2)
+            
+            # Fallback 1: lastDividendValue
+            if div_yield == 0.0:
+                last_div = info.get('lastDividendValue', 0)
+                if last_div and last_div > 0 and current_price > 0:
+                    div_yield = round((last_div / current_price) * 100, 2)
+            
+            # Fallback 2: dividendRate
+            if div_yield == 0.0:
+                div_rate = info.get('dividendRate', 0)
+                if div_rate and div_rate > 0 and current_price > 0:
+                    div_yield = round((div_rate / current_price) * 100, 2)
         except:
             div_yield = 0.0
 
@@ -333,16 +361,25 @@ def analyze_stock(symbol):
             except:
                 price_headline = "Price change data not available"
 
-        # -- Other Metrics --
+        # -- FIXED: Fund Data As Of (with fallback) --
         fund_data_date = info.get('mostRecentQuarter')
+        fund_date_str = 'N/A'
         if fund_data_date:
             try:
                 fund_date_str = datetime.fromtimestamp(fund_data_date).strftime('%Y-%m-%d')
             except:
                 fund_date_str = 'N/A'
-        else:
-            fund_date_str = 'N/A'
+        
+        # Fallback to last fiscal year end
+        if fund_date_str == 'N/A':
+            fiscal_end = info.get('lastFiscalYearEnd')
+            if fiscal_end:
+                try:
+                    fund_date_str = datetime.fromtimestamp(fiscal_end).strftime('%Y-%m-%d')
+                except:
+                    fund_date_str = 'N/A'
 
+        # -- Other Metrics --
         market_cap = info.get('marketCap', 0)
         market_cap_cr = round(market_cap / 1e7, 2) if market_cap > 0 else 0
 
@@ -476,7 +513,7 @@ if results:
     else:
         filtered_df = df
 
-    # ----- 3. DISPLAY TABLE (with color coding via emojis) -----
+    # ----- 3. DISPLAY TABLE -----
     st.dataframe(
         filtered_df,
         column_config={
@@ -520,7 +557,7 @@ if results:
         height=600
     )
 
-    st.caption(f"✅ Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Data: Yahoo Finance, GPR Index, Alpha Vantage/GNews. All numbers are mathematically derived from live data.")
+    st.caption(f"✅ Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Data: Yahoo Finance, GPR Index, GNews/Alpha Vantage. All numbers are mathematically derived from live data.")
 
     # ----- 4. DETAILED NEWS WITH SENTIMENT -----
     st.divider()
